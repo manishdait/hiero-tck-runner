@@ -1,4 +1,4 @@
-name: "Hiero TCK Action"
+name: "Hiero TCK Runner"
 description: "Runs Hiero SDK Technology Compatibility Kit (TCK) tests"
 author: "Manish Dait"
 
