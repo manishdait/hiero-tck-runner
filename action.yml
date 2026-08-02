@@ -1,0 +1,78 @@
+name: "Hiero TCK Action"
+description: "Runs Hiero SDK Technology Compatibility Kit (TCK) tests"
+author: "Manish Dait"
+
+inputs:
+  rpcServerUrl:
+    description: "URL of the target JSON-RPC server under test"
+    required: false
+    default: "http://localhost:8544/"
+  nodeIp:
+    description: "IP address and port of the consensus node"
+    required: false
+    default: "127.0.0.1:35211"
+  nodeAccountId:
+    description: "Account ID of the consensus node"
+    required: false
+    default: "0.0.3"
+  operatorAccountId:
+    description: "Operator account ID used to sign transactions"
+    required: false
+    default: "0.0.2"
+  operatorPrivateKey:
+    description: "Operator account private key"
+    required: false
+    default: '302e020100300506032b65700422042091132178e72057a1d7528025956fe39b0b847f200ab59b2fdd367017f3087137'
+  mirrornodeGrpcUrl:
+    description: "Address for the mirror node gRPC service"
+    required: false
+    default: "127.0.0.1:5600"
+  mirrornodeRestUrl:
+    description: "REST API URL for the mirror node"
+    required: false
+    default: "http://127.0.0.1:38081"
+  mirrornodeRestJavaUrl:
+    description: "Java-based REST API URL for the mirror node"
+    required: false
+    default: "http://127.0.0.1:8084"
+  tckTag:
+    description: "Tag or Commit SHA of hiero-sdk-tck"
+    required: false
+    default: "v0.12.0"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout Hiero TCK Repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: 'hiero-ledger/hiero-sdk-tck'
+        ref: ${{ inputs.tckTag }}
+        path: 'hiero-tck'
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 22
+        cache: 'npm'
+        cache-dependency-path: 'hiero-tck/package-lock.json'
+    
+    - name: Install TCK Dependencies
+      shell: bash
+      working-directory: 'hiero-tck'
+      run: npm ci
+    
+    - name: Run TCK Test Suite
+      shell: bash
+      working-directory: 'hiero-tck'
+      env:
+        OPERATOR_ACCOUNT_ID: ${{ inputs.operatorAccountId }}
+        OPERATOR_ACCOUNT_PRIVATE_KEY: ${{ inputs.operatorPrivateKey }}
+        NODE_IP: ${{ inputs.nodeIp }}
+        NODE_ACCOUNT_ID: ${{ inputs.nodeAccountId }}
+        NODE_TIMEOUT: 30000
+        MIRROR_NETWORK: ${{ inputs.mirrornodeGrpcUrl}}
+        MIRROR_NODE_REST_URL: ${{ inputs.mirrornodeRestUrl }}
+        MIRROR_NODE_REST_JAVA_URL: ${{ inputs.mirrornodeRestJavaUrl }}
+        JSON_RPC_SERVER_URL: ${{ inputs.rpcServerUrl }}
+      run: npm run test
