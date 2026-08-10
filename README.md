@@ -14,7 +14,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 
 ```yaml
 - name: Run Hiero TCK Test Suite
-  uses: manishdait/hiero-tck-runner@v0.0.1
+  uses: manishdait/hiero-tck-runner@main
   with:
     rpcServerUrl: 'http://localhost:8544/'
     tckTag: 'v0.12.0'
