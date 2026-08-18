@@ -16,7 +16,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 - name: Run Hiero TCK Test Suite
   uses: manishdait/hiero-tck-runner@main
   with:
-    rpcServerUrl: 'http://localhost:8544/'
+    rpcServerPort: '8544'
     tckTag: 'v0.12.0'
 ```
 
@@ -24,7 +24,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 
 | Input | Description | Required | Default |
 | ----- | ----------- | -------- | --------|
-| `rpcServerUrl` | Target JSON-RPC server URL under test | False | `http://localhost:8544/` |
+| `rpcServerPort` | Target JSON-RPC server Port under test | False | `8544` |
 | `nodeIp` | IP address and port of the consensus node | False | `127.0.0.1:35211` |
 | `nodeAccountId` |	Account ID of the consensus node | False | `0.0.3`|
 | `operatorAccountId` | Operator account ID used to sign transactions |	False |	`0.0.2`|
