@@ -79,11 +79,24 @@ runs:
           docker build -t hiero-rpc-server:local -f "$DOCKERFILE_PATH" .
           
           # 2. Start container in detached mode mapping dynamic port
-          docker run -d --name hiero-rpc-container -p "${RPC_PORT}:${RPC_PORT}" hiero-rpc-server:local
+          docker run -d --name hiero-rpc-container -p "${RPC_PORT}:8544" hiero-rpc-server:local
           
-          echo "Waiting for container on http://localhost:${RPC_PORT} to report HEALTHY..."
-          # TODO: Fix sleep
-          sleep 10
+          sleep 5
+          echo "Waiting for RPC server on http://localhost:${RPC_PORT}..."
+          
+          for i in {1..60}; do
+            if curl --silent --fail "http://localhost:${RPC_PORT}/" >/dev/null 2>&1; then
+              echo "RPC server is ready."
+              exit 0
+            fi
+            
+            echo "RPC server not ready yet ($i/60)..."
+            sleep 2
+          done
+          
+          echo "RPC server failed to become ready."
+          docker logs hiero-rpc-container
+          exit 1
         else
           echo "No Dockerfile found at $DOCKERFILE_PATH. Skipping container execution."
         fi
