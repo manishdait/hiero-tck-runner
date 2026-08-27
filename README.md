@@ -32,4 +32,36 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 | `mirrornodeGrpcUrl` |	Address for the mirror node gRPC service |	False |	`127.0.0.1:5600` |
 | `mirrornodeRestUrl` | REST API URL for the mirror node | False |	`http://127.0.0.1:38081` |
 | `mirrornodeRestJavaUrl` |	Java-based REST API URL for the mirror node | False | `http://127.0.0.1:8084` |
-| `tckTag` |Git tag, branch, or commit SHA of hiero-sdk-tck | False | `v0.12.0` |
+| `tckTag` | Git tag, branch, or commit SHA of hiero-sdk-tck | False | `v0.12.0` |
+| `dockerfilePath` | Path to the Dockerfile relative to repository root | False | `./Dockerfile` |
+
+
+## Usage
+```yml
+name: Test TCK endpoints
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tck-test:
+    name: "Run TCK test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Prepare Hiero Solo
+        id: solo
+        uses: hiero-ledger/hiero-solo-action@v0.23.0
+        with:
+          installMirrorNode: true
+
+      - name: Run TCK test
+        uses: manishdait/hiero-tck-runner@main
+```
