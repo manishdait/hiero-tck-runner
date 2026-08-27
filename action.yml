@@ -78,8 +78,8 @@ runs:
           # 1. Build image using caller repo root context
           docker build -t hiero-rpc-server:local -f "$DOCKERFILE_PATH" .
           
-          # 2. Start container in detached mode mapping dynamic port
-          docker run -d --name hiero-rpc-container -p "${RPC_PORT}:8544" hiero-rpc-server:local
+          # 2. Start container in detached mode
+          docker run -d --network host --name hiero-rpc-container hiero-rpc-server:local
           
           sleep 5
           echo "Waiting for RPC server on http://localhost:${RPC_PORT}..."
