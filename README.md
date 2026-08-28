@@ -4,13 +4,14 @@
 
 A GitHub Action to run the **Hiero SDK Technology Compatibility Kit (TCK)** test suite against a target JSON-RPC server and network node. 
 
-> ⚠️ **Note:** This is an unofficial GitHub Action designed to simplify SDK testing against [`hiero-ledger/hiero-sdk-tck`](https://github.com/hiero-ledger/hiero-sdk-tck).
+> [!WARNING]
+> This is an unofficial GitHub Action designed to simplify SDK testing against [`hiero-ledger/hiero-sdk-tck`](https://github.com/hiero-ledger/hiero-sdk-tck).
 
----
+
 
 ## Quick Start
 
-Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck-tests.yml`) after starting your SDK's JSON-RPC server:
+Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck-tests.yml`) to test SDK's JSON-RPC server:
 
 ```yaml
 - name: Run Hiero TCK Test Suite
@@ -38,7 +39,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 
 ## Usage
 ```yml
-name: Test TCK endpoints
+name: Test TCK Endpoints
 
 on:
   push:
