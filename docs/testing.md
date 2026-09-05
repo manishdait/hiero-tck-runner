@@ -80,10 +80,22 @@ EXPOSE 8544
 CMD ["uv", "run", "-m", "tck"]
 ```
 
+### Note
+Need to update the host for the tck server from `127.0.0.1` to `0.0.0.0`
+
+```python
+@dataclass
+class ServerConfig:
+    """Configuration for the TCK server."""
+
+    host: str = field(default_factory=lambda: os.getenv("TCK_HOST", "0.0.0.0"))  # nosec B104
+    port: int = field(default_factory=lambda: _parse_port(os.getenv("TCK_PORT", "8544")))
+    ...
+```
 
 ### Reference
 
 For a working implementation, see the **`test-tck-action` branch of `hiero-sdk-python` fork**:
 
 - [Hiero SDK Python test-tck-action branch](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
-- [TCK Runner Workflow Logs](https://github.com/manishdait/hiero-sdk-python/actions/runs/33148565509/job/98969576507)
+- [TCK Runner Workflow Logs](https://github.com/manishdait/hiero-sdk-python/actions/runs/33972335265/job/101322936636)
