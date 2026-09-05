@@ -43,6 +43,14 @@ inputs:
     description: "Path to the Dockerfile relative to repository root"
     required: false
     default: "./Dockerfile"
+  testScript:
+    description: "npm script the TCK is run with. 'test' is parallel (--jobs 7), 'test:serial' runs one at a time."
+    required: false
+    default: "test:serial"
+  testGrep:
+    description: "Only run tests whose full title matches this regex (mocha --grep). Empty runs the whole suite."
+    required: false
+    default: ""
   uploadReport:
     description: "Upload the mochawesome TCK report as a workflow artifact"
     required: false
@@ -63,8 +71,17 @@ outputs:
     description: "Number of failing TCK tests"
     value: ${{ steps.results.outputs.failed }}
   pending:
-    description: "Number of pending or skipped TCK tests"
+    description: "Number of pending TCK tests"
     value: ${{ steps.results.outputs.pending }}
+  hookFailures:
+    description: "Number of failed suite hooks, counted separately from test failures"
+    value: ${{ steps.results.outputs.hookFailures }}
+  skipped:
+    description: "Number of registered tests that never ran, usually because a suite hook failed"
+    value: ${{ steps.results.outputs.skipped }}
+  registered:
+    description: "Number of tests registered by the suite, including those that never ran"
+    value: ${{ steps.results.outputs.registered }}
   reportPath:
     description: "Path to the generated mochawesome report directory, empty if no report was produced"
     value: ${{ steps.results.outputs.reportPath }}
@@ -146,8 +163,14 @@ runs:
       # recorded rather than propagated here so that the report is collected and
       # the container logs are dumped before the action fails the job.
       run: |
+        ARGS=()
+        if [ -n "${{ inputs.testGrep }}" ]; then
+          ARGS+=(--grep "${{ inputs.testGrep }}")
+          echo "::notice title=Filtered TCK run::Only running tests matching /${{ inputs.testGrep }}/"
+        fi
+
         set +e
-        npm run test:serial
+        npm run "${{ inputs.testScript }}" -- "${ARGS[@]}"
         code=$?
         set -e
 
@@ -172,6 +195,9 @@ runs:
             echo "passed=0"
             echo "failed=0"
             echo "pending=0"
+            echo "hookFailures=0"
+            echo "skipped=0"
+            echo "registered=0"
             echo "reportPath="
           } >> "$GITHUB_OUTPUT"
           {
@@ -182,32 +208,58 @@ runs:
           exit 0
         fi
 
-        TOTAL=$(jq -r '.stats.tests // 0' "$REPORT")
-        PASSED=$(jq -r '.stats.passes // 0' "$REPORT")
-        FAILED=$(jq -r '.stats.failures // 0' "$REPORT")
-        PENDING=$(jq -r '.stats.pending // 0' "$REPORT")
-        DURATION=$(jq -r '((.stats.duration // 0) / 1000) | floor' "$REPORT")
+        # mocha's console "failing" count is stats.failures + stats.other, where
+        # "other" is failed before/after hooks. A hook failure skips every test in
+        # its suite, so stats.skipped is reported too - those tests never ran and
+        # are counted in neither passes nor failures.
+        read -r TOTAL PASSED FAILED PENDING OTHER SKIPPED REGISTERED DURATION < <(
+          jq -r '.stats | [
+            (.tests // 0), (.passes // 0), (.failures // 0), (.pending // 0),
+            (.other // 0), (.skipped // 0), (.testsRegistered // 0),
+            ((.duration // 0) / 1000 | floor)
+          ] | @tsv' "$REPORT"
+        )
+
+        ALL_FAILURES=$((FAILED + OTHER))
 
         {
           echo "total=${TOTAL}"
           echo "passed=${PASSED}"
           echo "failed=${FAILED}"
           echo "pending=${PENDING}"
+          echo "hookFailures=${OTHER}"
+          echo "skipped=${SKIPPED}"
+          echo "registered=${REGISTERED}"
           echo "reportPath=hiero-tck/mochawesome-report"
         } >> "$GITHUB_OUTPUT"
 
         {
           echo "### Hiero TCK Results"
           echo ""
-          echo "| Total | Passed | Failed | Pending | Duration |"
-          echo "| ----: | -----: | -----: | ------: | -------: |"
-          echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${PENDING} | ${DURATION}s |"
+          echo "| Total | Passed | Failed | Pending | Hook failures | Skipped | Duration |"
+          echo "| ----: | -----: | -----: | ------: | ------------: | ------: | -------: |"
+          echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${PENDING} | ${OTHER} | ${SKIPPED} | $((DURATION / 60))m $((DURATION % 60))s |"
         } >> "$GITHUB_STEP_SUMMARY"
 
-        if [ "$FAILED" -gt 0 ]; then
+        if [ "$SKIPPED" -gt 0 ]; then
           {
             echo ""
-            echo "<details><summary>Failing tests (${FAILED})</summary>"
+            echo "> [!WARNING]"
+            echo "> ${OTHER} suite hook(s) failed, so ${SKIPPED} of ${REGISTERED} registered tests never ran."
+            echo "> Those tests are counted as neither passed nor failed."
+          } >> "$GITHUB_STEP_SUMMARY"
+        elif [ "$OTHER" -gt 0 ]; then
+          {
+            echo ""
+            echo "> [!WARNING]"
+            echo "> ${OTHER} suite hook(s) failed. Hook failures are counted separately from test failures."
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        if [ "$ALL_FAILURES" -gt 0 ]; then
+          {
+            echo ""
+            echo "<details><summary>Failures (${ALL_FAILURES})</summary>"
             echo ""
             jq -r '[.. | objects | select(.fail? == true) | .fullTitle] | unique | .[] | "- " + .' "$REPORT"
             echo ""
@@ -249,5 +301,12 @@ runs:
       if: always() && steps.tck.outputs.exitCode != '' && steps.tck.outputs.exitCode != '0'
       shell: bash
       run: |
-        echo "TCK suite failed: ${{ steps.results.outputs.failed }} of ${{ steps.results.outputs.total }} tests failed."
+        FAILED="${{ steps.results.outputs.failed }}"
+        HOOKS="${{ steps.results.outputs.hookFailures }}"
+        SKIPPED="${{ steps.results.outputs.skipped }}"
+
+        echo "TCK suite failed: ${FAILED} test failure(s) and ${HOOKS} hook failure(s) out of ${{ steps.results.outputs.total }} tests."
+        if [ "${SKIPPED:-0}" -gt 0 ] 2>/dev/null; then
+          echo "${SKIPPED} further registered test(s) never ran."
+        fi
         exit 1
