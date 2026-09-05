@@ -18,7 +18,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
   uses: manishdait/hiero-tck-runner@main
   with:
     rpcServerPort: '8544'
-    tckTag: 'v0.12.0'
+    tckTag: 'v0.12.4'
 ```
 
 ##  Inputs
@@ -33,7 +33,7 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 | `mirrornodeGrpcUrl` |	Address for the mirror node gRPC service |	False |	`127.0.0.1:5600` |
 | `mirrornodeRestUrl` | REST API URL for the mirror node | False |	`http://127.0.0.1:38081` |
 | `mirrornodeRestJavaUrl` |	Java-based REST API URL for the mirror node | False | `http://127.0.0.1:8084` |
-| `tckTag` | Git tag, branch, or commit SHA of hiero-sdk-tck | False | `v0.12.0` |
+| `tckTag` | Git tag, branch, or commit SHA of hiero-sdk-tck | False | `v0.12.4` |
 | `dockerfilePath` | Path to the Dockerfile relative to repository root | False | `./Dockerfile` |
 
 

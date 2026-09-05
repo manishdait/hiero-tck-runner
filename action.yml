@@ -38,7 +38,7 @@ inputs:
   tckTag:
     description: "Tag or Commit SHA of hiero-sdk-tck"
     required: false
-    default: "v0.12.0"
+    default: "v0.12.4"
   dockerfilePath:
     description: "Path to the Dockerfile relative to repository root"
     required: false
@@ -116,7 +116,12 @@ runs:
         MIRROR_NODE_REST_URL: ${{ inputs.mirrornodeRestUrl }}
         MIRROR_NODE_REST_JAVA_URL: ${{ inputs.mirrornodeRestJavaUrl }}
         JSON_RPC_SERVER_URL: "http://localhost:${{ inputs.rpcServerPort }}/"
-      run: npm run test
+      run: |
+        if node -e "process.exit(require('./package.json').scripts?.['test:ci'] ? 0 : 1)"; then
+          npm run test:ci
+        else
+          npm test
+        fi
     
     - name: CleanUp RPC Server Container
       if: always()
