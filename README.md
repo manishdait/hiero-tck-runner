@@ -17,43 +17,194 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
 - name: Run Hiero TCK Test Suite
   uses: manishdait/hiero-tck-runner@main
   with:
-    rpcServerPort: '8544'
-    tckTag: 'v0.12.4'
+    dockerfilePath: './tck/Dockerfile'
+    serverEnv: |
+      TCK_PORT=8544
 ```
 
 For a details and refrences, see the [Testing Guide](./docs/testing.md).
 
 ##  Inputs
 
-| Input | Description | Required | Default |
-| ----- | ----------- | -------- | --------|
-| `rpcServerPort` | Target JSON-RPC server Port under test | False | `8544` |
-| `nodeIp` | IP address and port of the consensus node | False | `127.0.0.1:35211` |
-| `nodeAccountId` |	Account ID of the consensus node | False | `0.0.3`|
-| `operatorAccountId` | Operator account ID used to sign transactions |	False |	`0.0.2`|
-| `operatorPrivateKey` | Operator account private key for signing |	False |	`302e02...` (Solo Default Admin Key) |
-| `mirrornodeGrpcUrl` |	Address for the mirror node gRPC service |	False |	`127.0.0.1:5600` |
-| `mirrornodeRestUrl` | REST API URL for the mirror node | False |	`http://127.0.0.1:38081` |
-| `mirrornodeRestJavaUrl` |	Java-based REST API URL for the mirror node | False | `http://127.0.0.1:8084` |
-| `tckTag` | Git tag, branch, or commit SHA of hiero-sdk-tck | False | `v0.12.4` |
-| `dockerfilePath` | Path to the Dockerfile relative to repository root | False | `./Dockerfile` |
+### Server under test
 
+| Input | Description | Default |
+| ----- | ----------- | ------- |
+| `startServer` | Build and run the server from `dockerfilePath`. Set `false` if your workflow starts it. | `true` |
+| `dockerfilePath` | Path to the Dockerfile, relative to repository root | `./Dockerfile` |
+| `rpcServerPort` | Port the JSON-RPC server listens on | `8544` |
+| `serverEnv` | Environment passed to the container, one `KEY=VALUE` per line | `""` |
+| `serverStartupTimeout` | Seconds to wait for the server to answer | `120` |
+
+### Network under test
+
+Defaults match [`hiero-solo-action`](https://github.com/hiero-ledger/hiero-solo-action) with `installMirrorNode: true`.
+
+| Input | Description | Default |
+| ----- | ----------- | ------- |
+| `nodeIp` | Consensus node address | `127.0.0.1:35211` |
+| `nodeAccountId` | Consensus node account | `0.0.3` |
+| `operatorAccountId` | Operator account | `0.0.2` |
+| `operatorPrivateKey` | Operator key (masked in logs) | Solo genesis key |
+| `mirrornodeGrpcUrl` | Mirror node gRPC | `127.0.0.1:5600` |
+| `mirrornodeRestUrl` | Mirror node REST | `http://127.0.0.1:38081` |
+| `mirrornodeRestJavaUrl` | Mirror node Java REST | `http://127.0.0.1:8084` |
+| `nodeTimeout` | Consensus request timeout (ms) | `30000` |
+
+### Which tests to run
+
+| Input | Description | Default |
+| ----- | ----------- | ------- |
+| `tckTag` | Tag, branch or SHA of `hiero-sdk-tck` | `v0.12.4` |
+| `testSpec` | Space-separated spec files/globs. Runs **only** these. Overrides `testScript`. | `""` |
+| `testGrep` | Only tests whose full title matches this regex | `""` |
+| `testScript` | npm script when `testSpec` is empty. `auto` prefers the TCK's `test:ci` when the pinned tag has one, else `test:serial` | `auto` |
+
+### Reporting
+
+| Input | Description | Default |
+| ----- | ----------- | ------- |
+| `uploadReport` | Upload the mochawesome report as an artifact | `true` |
+| `artifactName` | Artifact name. Vary per matrix leg. | `tck-report` |
+
+
+##  Running a targeted subset
+
+The full suite takes roughly **33 minutes**, almost all of it waiting on the network:
+`beforeEach` hooks create accounts and mint tokens on chain. Failures are cheap; setup is not.
+So the way to make a PR fast is to run fewer tests, not to make tests faster.
+
+**While implementing one method**, point `testSpec` at its spec file. Only that file is
+loaded and compiled, which is much faster than filtering the whole suite with `testGrep`:
+
+```yml
+- uses: manishdait/hiero-tck-runner@main
+  with:
+    testSpec: "src/tests/crypto-service/test-account-create-transaction.ts"
+```
+
+Narrow further to a single test with `testGrep`:
+
+```yml
+    testSpec: "src/tests/crypto-service/test-account-create-transaction.ts"
+    testGrep: "Creates an account with"
+```
+
+**For the full suite**, `testScript` defaults to `auto`: the TCK's own `test:ci` script when the
+pinned tag provides one, otherwise `test:serial`. `test:ci` gates on the mochawesome report rather
+than mocha's exit code, so a worker killed mid-run fails the job instead of silently passing.
+
+> [!IMPORTANT]
+> Running the whole suite against **one** Solo network is the main source of spurious failures.
+> The consensus node becomes unhealthy under sustained load and the SDK client then fails every
+> later request with `All nodes are unhealthy`. Those show up as server errors, and the action
+> reports them separately from genuine test failures — a run whose failures are all
+> infrastructural is flagged as not a valid measurement.
+>
+> Shard the suite across jobs, each with its own Solo network, rather than running all 61 spec
+> files against a single one:
+
+```yml
+strategy:
+  matrix:
+    include:
+      - shard: crypto
+        spec: "src/tests/crypto-service/*.ts"
+      - shard: token
+        spec: "src/tests/token-service/*.ts"
+      # ...
+steps:
+  - uses: hiero-ledger/hiero-solo-action@v0.24.0   # one network per shard
+    with: { installMirrorNode: true }
+  - uses: manishdait/hiero-tck-runner@main
+    with:
+      testSpec: ${{ matrix.spec }}
+      artifactName: tck-report-${{ matrix.shard }}
+```
+
+Note that mocha's own `--parallel` (`testScript: test` or `test:ci`) shares a single network across
+7 workers, which makes the above worse, and mochawesome does not populate per-test detail under it —
+the counts are right but no failing test names are recorded.
+
+> [!TIP]
+> A common pattern is `testSpec` on pull requests for fast feedback, and the full suite
+> nightly on a schedule.
+
+
+##  Outputs
+
+The action always lets the TCK suite run to completion, then publishes its results before failing the
+job. Results come from the mochawesome report the suite writes to `hiero-tck/mochawesome-report/`.
+
+| Output | Description |
+| ------ | ----------- |
+| `total` | Total number of TCK tests executed |
+| `passed` | Number of passing tests |
+| `failed` | Number of failing tests |
+| `pending` | Number of pending tests |
+| `hookFailures` | Failed suite hooks, counted separately from test failures |
+| `skipped` | Registered tests that never ran, usually after a hook failure |
+| `registered` | Tests registered by the suite, including those that never ran |
+| `reportPath` | Path to the mochawesome report directory, empty if no report was produced |
+
+In addition, the action writes a pass/fail table (and a collapsed list of failing tests) to the
+[job summary](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary),
+uploads the HTML and JSON report as an artifact, and dumps the RPC server container logs when the
+suite fails.
+
+To act on the results yourself, give the step an `id` and read its outputs:
+
+```yml
+- name: Run TCK test
+  id: tck
+  uses: manishdait/hiero-tck-runner@main
+
+- name: Report
+  if: always()
+  run: echo "${{ steps.tck.outputs.passed }}/${{ steps.tck.outputs.total }} TCK tests passed"
+```
+
+> [!NOTE]
+> `artifactName` must be unique per job. When running this action in a matrix, vary it
+> (e.g. `artifactName: tck-report-${{ matrix.sdk }}`) or the artifact upload will fail on
+> duplicate names.
+
+
+##  Requirements and caveats
+
+- **Linux runners only.** The server container is started with `--network host` so it can reach
+  Solo on `localhost`. Host networking is a no-op on macOS and Windows runners.
+- **Docker and `jq`** must be present. Both are preinstalled on `ubuntu-latest`.
+- **The action runs `actions/setup-node`**, which changes the Node version for the rest of the
+  job. If your workflow depends on a specific Node version afterwards, re-run `setup-node`.
+- **`operatorPrivateKey` is masked** via `::add-mask::`, but action inputs are not secrets.
+  The default is the well-known Solo genesis key. Never pass a key with real value.
+
+> [!IMPORTANT]
+> `rpcServerPort` tells the action where to *probe*; it does not tell your server where to
+> *listen*. Use `serverEnv` to pass the port through in whatever form your server expects
+> (`TCK_PORT`, `PORT`, ...), or the two will disagree.
 
 ## Usage
+
+A pull-request check that runs only the method being worked on, plus the full suite nightly:
+
 ```yml
-name: Test TCK Endpoints
+name: TCK
 
 on:
-  push:
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
 
 jobs:
-  tck-test:
-    name: "Run TCK test"
+  tck:
+    name: TCK
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -61,10 +212,24 @@ jobs:
 
       - name: Prepare Hiero Solo
         id: solo
-        uses: hiero-ledger/hiero-solo-action@v0.23.0
+        uses: hiero-ledger/hiero-solo-action@v0.24.0
         with:
           installMirrorNode: true
 
-      - name: Run TCK test
+      - name: Run TCK
+        id: tck
         uses: manishdait/hiero-tck-runner@main
+        with:
+          dockerfilePath: './tck/Dockerfile'
+          serverEnv: |
+            TCK_PORT=8544
+          # Fast, targeted run on PRs; whole suite on the nightly.
+          testSpec: ${{ github.event_name == 'pull_request' && 'src/tests/crypto-service/test-account-create-transaction.ts' || '' }}
+          artifactName: tck-report-${{ github.event_name }}
+
+      - name: Summarise
+        if: always()
+        run: |
+          echo "${{ steps.tck.outputs.passed }}/${{ steps.tck.outputs.total }} passed, \
+                ${{ steps.tck.outputs.skipped }} never ran"
 ```
