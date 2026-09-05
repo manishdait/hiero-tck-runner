@@ -94,6 +94,9 @@ class ServerConfig:
     ...
 ```
 
+> [!NOTE]
+> The TCK uses the `test:ci` command to run the test suite. This command is available in TCK versions `v0.12.1` and later. For older TCK versions, the runner falls back to `test`, which may fail due to the high resource usage of the TCK test suite when using tckTag below `v0.12.1`.
+
 ### Reference
 
 For a working implementation, see the **`test-tck-action` branch of `hiero-sdk-python` fork**:
