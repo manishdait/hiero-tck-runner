@@ -113,6 +113,15 @@ outputs:
   registered:
     description: "Number of tests registered by the suite, including those that never ran"
     value: ${{ steps.results.outputs.registered }}
+  genuineFailures:
+    description: "Failures that are real test assertion failures, excluding server and network errors"
+    value: ${{ steps.results.outputs.genuineFailures }}
+  infraFailures:
+    description: "Failures caused by server or network errors rather than SDK incompatibility"
+    value: ${{ steps.results.outputs.infraFailures }}
+  unimplementedMethods:
+    description: "Comma-separated JSON-RPC methods the server under test does not implement"
+    value: ${{ steps.results.outputs.unimplementedMethods }}
   reportPath:
     description: "Path to the generated mochawesome report directory, empty if no report was produced"
     value: ${{ steps.results.outputs.reportPath }}
@@ -257,13 +266,15 @@ runs:
 
         echo "Running: npm run ${SCRIPT} -- ${ARGS[*]}"
 
+        # Output is teed so the results step can mine it for the
+        # "Method <x> not found" lines the mochawesome report never carries.
         set +e
         if [ ${#ARGS[@]} -gt 0 ]; then
-          npm run "$SCRIPT" -- "${ARGS[@]}"
+          npm run "$SCRIPT" -- "${ARGS[@]}" 2>&1 | tee tck-output.log
         else
-          npm run "$SCRIPT"
+          npm run "$SCRIPT" 2>&1 | tee tck-output.log
         fi
-        code=$?
+        code=${PIPESTATUS[0]}
         set -e
 
         echo "exitCode=${code}" >> "$GITHUB_OUTPUT"
@@ -314,6 +325,36 @@ runs:
 
         ALL_FAILURES=$((FAILED + OTHER))
 
+        # Classify each failure by its error message. A run against an unhealthy
+        # network fails in bulk with server errors that say nothing about SDK
+        # compatibility; separating those from genuine assertion failures is the
+        # difference between a usable report and a misleading one.
+        GROUPS_FILE="$(mktemp)"
+        jq '
+          def clean: (.err.message // "unknown")
+            | gsub("\n"; " ") | gsub(" +at .*"; "") | .[0:110];
+          def kind: if test("Internal error|unhealthy") then "server"
+                    elif test("Hiero error") then "network"
+                    elif test("^TypeError") then "harness"
+                    else "test" end;
+          [ .. | objects | select(.fail? == true)
+            | { title: (.fullTitle // "<untitled>"), cause: clean } ]
+          | map(. + {kind: (.cause | kind)})
+          | group_by(.cause) | sort_by(-length)
+        ' "$REPORT" > "$GROUPS_FILE"
+
+        DETAIL=$(jq -r  '[.[] | length] | add // 0' "$GROUPS_FILE")
+        GENUINE=$(jq -r '[.[] | select(.[0].kind == "test") | length] | add // 0' "$GROUPS_FILE")
+        INFRA=$(jq -r   '[.[] | select(.[0].kind != "test") | length] | add // 0' "$GROUPS_FILE")
+
+        # Unimplemented methods appear only on stdout, never in the report.
+        UNIMPL=""
+        if [ -f tck-output.log ]; then
+          UNIMPL=$(grep -oE "Method [A-Za-z0-9_]+ not found" tck-output.log 2>/dev/null \
+                   | sed 's/^Method //; s/ not found$//' | sort -u || true)
+        fi
+        UNIMPL_COUNT=$(printf '%s' "$UNIMPL" | grep -c . || true)
+
         {
           echo "total=${TOTAL}"
           echo "passed=${PASSED}"
@@ -322,6 +363,9 @@ runs:
           echo "hookFailures=${OTHER}"
           echo "skipped=${SKIPPED}"
           echo "registered=${REGISTERED}"
+          echo "genuineFailures=${GENUINE}"
+          echo "infraFailures=${INFRA}"
+          echo "unimplementedMethods=$(printf '%s' "$UNIMPL" | tr '\n' ',' | sed 's/,$//')"
           echo "reportPath=hiero-tck/mochawesome-report"
         } >> "$GITHUB_OUTPUT"
 
@@ -332,6 +376,24 @@ runs:
           echo "| ----: | -----: | -----: | ------: | ------------: | ------: | -------: |"
           echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${PENDING} | ${OTHER} | ${SKIPPED} | $((DURATION / 60))m $((DURATION % 60))s |"
         } >> "$GITHUB_STEP_SUMMARY"
+
+        # The headline judgement: is this run a valid measurement at all?
+        if [ "$DETAIL" -gt 0 ] && [ "$INFRA" -gt 0 ] && [ "$GENUINE" -eq 0 ]; then
+          {
+            echo ""
+            echo "> [!CAUTION]"
+            echo "> All ${INFRA} failures are server or network errors, not SDK incompatibilities."
+            echo "> **This run is not a valid compatibility measurement.** The network or the server"
+            echo "> under test became unhealthy. Re-run over fewer tests per network - see testSpec."
+          } >> "$GITHUB_STEP_SUMMARY"
+        elif [ "$INFRA" -gt 0 ]; then
+          {
+            echo ""
+            echo "> [!WARNING]"
+            echo "> ${INFRA} of ${DETAIL} failures are server or network errors rather than SDK"
+            echo "> incompatibilities. Genuine test failures: **${GENUINE}**."
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
 
         if [ "$SKIPPED" -gt 0 ]; then
           {
@@ -348,14 +410,40 @@ runs:
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
-        if [ "$ALL_FAILURES" -gt 0 ]; then
+        if [ "$UNIMPL_COUNT" -gt 0 ]; then
           {
             echo ""
-            echo "<details><summary>Failures (${ALL_FAILURES})</summary>"
+            echo "**Not implemented by this SDK (${UNIMPL_COUNT})** - reported as pending, not failed."
             echo ""
-            jq -r '[.. | objects | select(.fail? == true) | .fullTitle] | unique | .[] | "- " + .' "$REPORT"
+            printf '%s\n' "$UNIMPL" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        if [ "$DETAIL" -gt 0 ]; then
+          {
             echo ""
+            echo "**Failures by cause**"
+            echo ""
+            echo "| Count | Cause | Kind |"
+            echo "| ----: | ----- | ---- |"
+            jq -r '.[] | "| \(length) | `\(.[0].cause)` | \(.[0].kind) |"' "$GROUPS_FILE"
+            echo ""
+            echo "<details><summary>Failing tests (${DETAIL})</summary>"
+            echo ""
+            jq -r '.[]
+              | "##### \(.[0].kind) - \(.[0].cause) (\(length))", "",
+                (.[0:40][] | "- \(.title)"),
+                (if length > 40 then "- _...and \(length - 40) more_" else empty end),
+                ""' "$GROUPS_FILE"
             echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+        elif [ "$ALL_FAILURES" -gt 0 ]; then
+          {
+            echo ""
+            echo "> [!NOTE]"
+            echo "> The report carries no per-test detail, so the ${ALL_FAILURES} failures cannot be"
+            echo "> classified and the HTML report will be empty. mochawesome does not populate"
+            echo "> results under mocha's parallel mode - re-run with testScript: test:serial."
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
