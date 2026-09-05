@@ -85,5 +85,5 @@ CMD ["uv", "run", "-m", "tck"]
 
 For a working implementation, see the **`test-tck-action` branch of `hiero-sdk-python` fork**:
 
-[Hiero SDK Python test-tck-action branch](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
-[TCK Runner Workflow Logs](https://github.com/manishdait/hiero-sdk-python/actions/runs/33148565509/job/98969576507)
+- [Hiero SDK Python test-tck-action branch](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
+- [TCK Runner Workflow Logs](https://github.com/manishdait/hiero-sdk-python/actions/runs/33148565509/job/98969576507)
