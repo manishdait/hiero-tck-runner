@@ -22,6 +22,8 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
       TCK_PORT=8544
 ```
 
+For a details and refrences, see the [Testing Guide](./docs/testing.md).
+
 ##  Inputs
 
 ### Server under test
@@ -53,10 +55,10 @@ Defaults match [`hiero-solo-action`](https://github.com/hiero-ledger/hiero-solo-
 
 | Input | Description | Default |
 | ----- | ----------- | ------- |
-| `tckTag` | Tag, branch or SHA of `hiero-sdk-tck` | `v0.12.0` |
+| `tckTag` | Tag, branch or SHA of `hiero-sdk-tck` | `v0.12.4` |
 | `testSpec` | Space-separated spec files/globs. Runs **only** these. Overrides `testScript`. | `""` |
 | `testGrep` | Only tests whose full title matches this regex | `""` |
-| `testScript` | npm script when `testSpec` is empty: `test` (parallel) or `test:serial` | `test:serial` |
+| `testScript` | npm script when `testSpec` is empty. `auto` prefers the TCK's `test:ci` when the pinned tag has one, else `test:serial` | `auto` |
 
 ### Reporting
 
@@ -88,13 +90,41 @@ Narrow further to a single test with `testGrep`:
     testGrep: "Creates an account with"
 ```
 
-**For the full suite**, `testScript: test` runs mocha with `--parallel --jobs 7`, which is what
-every upstream `hiero-sdk-tck` compatibility workflow uses. The work is network-bound, so this
-parallelises well. `test:serial` remains the default.
+**For the full suite**, `testScript` defaults to `auto`: the TCK's own `test:ci` script when the
+pinned tag provides one, otherwise `test:serial`. `test:ci` gates on the mochawesome report rather
+than mocha's exit code, so a worker killed mid-run fails the job instead of silently passing.
+
+> [!IMPORTANT]
+> Running the whole suite against **one** Solo network is the main source of spurious failures.
+> The consensus node becomes unhealthy under sustained load and the SDK client then fails every
+> later request with `All nodes are unhealthy`. Those show up as server errors, and the action
+> reports them separately from genuine test failures — a run whose failures are all
+> infrastructural is flagged as not a valid measurement.
+>
+> Shard the suite across jobs, each with its own Solo network, rather than running all 61 spec
+> files against a single one:
 
 ```yml
-    testScript: "test"
+strategy:
+  matrix:
+    include:
+      - shard: crypto
+        spec: "src/tests/crypto-service/*.ts"
+      - shard: token
+        spec: "src/tests/token-service/*.ts"
+      # ...
+steps:
+  - uses: hiero-ledger/hiero-solo-action@v0.24.0   # one network per shard
+    with: { installMirrorNode: true }
+  - uses: manishdait/hiero-tck-runner@main
+    with:
+      testSpec: ${{ matrix.spec }}
+      artifactName: tck-report-${{ matrix.shard }}
 ```
+
+Note that mocha's own `--parallel` (`testScript: test` or `test:ci`) shares a single network across
+7 workers, which makes the above worse, and mochawesome does not populate per-test detail under it —
+the counts are right but no failing test names are recorded.
 
 > [!TIP]
 > A common pattern is `testSpec` on pull requests for fast feedback, and the full suite
@@ -193,9 +223,8 @@ jobs:
           dockerfilePath: './tck/Dockerfile'
           serverEnv: |
             TCK_PORT=8544
-          # Fast, targeted run on PRs; whole suite in parallel on the nightly.
+          # Fast, targeted run on PRs; whole suite on the nightly.
           testSpec: ${{ github.event_name == 'pull_request' && 'src/tests/crypto-service/test-account-create-transaction.ts' || '' }}
-          testScript: "test"
           artifactName: tck-report-${{ github.event_name }}
 
       - name: Summarise

@@ -67,7 +67,7 @@ inputs:
   tckTag:
     description: "Tag or Commit SHA of hiero-sdk-tck"
     required: false
-    default: "v0.12.0"
+    default: "v0.12.4"
   testSpec:
     description: "Space-separated spec files or globs to run, relative to the TCK root, e.g. 'src/tests/crypto-service/test-account-create-transaction.ts'. Runs only those files, which is far faster than the whole suite. Overrides testScript."
     required: false
@@ -77,9 +77,9 @@ inputs:
     required: false
     default: ""
   testScript:
-    description: "npm script used when testSpec is empty. 'test' runs in parallel (--jobs 7), 'test:serial' runs one at a time."
+    description: "npm script used when testSpec is empty. Leave as 'auto' to prefer the TCK's own test:ci script when the pinned tag provides one and fall back to test:serial. Set explicitly to 'test:ci', 'test' (both parallel, --jobs 7) or 'test:serial' (one at a time)."
     required: false
-    default: "test:serial"
+    default: "auto"
 
   # --- Reporting -----------------------------------------------------------
   uploadReport:
@@ -255,6 +255,15 @@ runs:
           read -ra SPECS <<< "$TEST_SPEC"
           ARGS+=("${SPECS[@]}")
           echo "::notice title=Targeted TCK run::Running only: ${TEST_SPEC}"
+        elif [ "$TEST_SCRIPT" = "auto" ]; then
+          # Newer TCK tags ship test:ci, which gates on the mochawesome report
+          # rather than mocha's exit code. Older tags do not, so fall back.
+          if node -e "process.exit(require('./package.json').scripts?.['test:ci'] ? 0 : 1)"; then
+            SCRIPT="test:ci"
+          else
+            SCRIPT="test:serial"
+          fi
+          echo "::notice title=TCK script::Resolved testScript 'auto' to '${SCRIPT}'"
         else
           SCRIPT="$TEST_SCRIPT"
         fi
