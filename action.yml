@@ -116,7 +116,7 @@ runs:
         MIRROR_NODE_REST_URL: ${{ inputs.mirrornodeRestUrl }}
         MIRROR_NODE_REST_JAVA_URL: ${{ inputs.mirrornodeRestJavaUrl }}
         JSON_RPC_SERVER_URL: "http://localhost:${{ inputs.rpcServerPort }}/"
-      run: npm run test:ci
+      run: npm run test
     
     - name: CleanUp RPC Server Container
       if: always()
