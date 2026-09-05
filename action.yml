@@ -2,11 +2,34 @@ name: "Hiero TCK Runner"
 description: "Runs Hiero SDK Technology Compatibility Kit (TCK) tests"
 author: "Manish Dait"
 
+branding:
+  icon: "check-square"
+  color: "purple"
+
 inputs:
+  # --- Server under test ---------------------------------------------------
+  startServer:
+    description: "Build and run the JSON-RPC server from dockerfilePath. Set to false if the workflow starts the server itself."
+    required: false
+    default: "true"
+  dockerfilePath:
+    description: "Path to the Dockerfile relative to repository root. Only used when startServer is true."
+    required: false
+    default: "./Dockerfile"
   rpcServerPort:
     description: "Port of the target JSON-RPC server under test"
     required: false
     default: "8544"
+  serverEnv:
+    description: "Environment variables passed to the server container, one KEY=VALUE per line. Use this to tell the server which port to bind, e.g. TCK_PORT=8544."
+    required: false
+    default: ""
+  serverStartupTimeout:
+    description: "Seconds to wait for the JSON-RPC server to become ready"
+    required: false
+    default: "120"
+
+  # --- Network under test --------------------------------------------------
   nodeIp:
     description: "IP address and port of the consensus node"
     required: false
@@ -20,7 +43,7 @@ inputs:
     required: false
     default: "0.0.2"
   operatorPrivateKey:
-    description: "Operator account private key"
+    description: "Operator account private key. Masked in logs. Never pass a key with real value."
     required: false
     default: '302e020100300506032b65700422042091132178e72057a1d7528025956fe39b0b847f200ab59b2fdd367017f3087137'
   mirrornodeGrpcUrl:
@@ -35,22 +58,30 @@ inputs:
     description: "Java-based REST API URL for the mirror node"
     required: false
     default: "http://127.0.0.1:8084"
+  nodeTimeout:
+    description: "Consensus node request timeout in milliseconds"
+    required: false
+    default: "30000"
+
+  # --- Which tests to run --------------------------------------------------
   tckTag:
     description: "Tag or Commit SHA of hiero-sdk-tck"
     required: false
     default: "v0.12.0"
-  dockerfilePath:
-    description: "Path to the Dockerfile relative to repository root"
-    required: false
-    default: "./Dockerfile"
-  testScript:
-    description: "npm script the TCK is run with. 'test' is parallel (--jobs 7), 'test:serial' runs one at a time."
-    required: false
-    default: "test:serial"
-  testGrep:
-    description: "Only run tests whose full title matches this regex (mocha --grep). Empty runs the whole suite."
+  testSpec:
+    description: "Space-separated spec files or globs to run, relative to the TCK root, e.g. 'src/tests/crypto-service/test-account-create-transaction.ts'. Runs only those files, which is far faster than the whole suite. Overrides testScript."
     required: false
     default: ""
+  testGrep:
+    description: "Only run tests whose full title matches this regex (mocha --grep). Combine with testSpec to target a single method."
+    required: false
+    default: ""
+  testScript:
+    description: "npm script used when testSpec is empty. 'test' runs in parallel (--jobs 7), 'test:serial' runs one at a time."
+    required: false
+    default: "test:serial"
+
+  # --- Reporting -----------------------------------------------------------
   uploadReport:
     description: "Upload the mochawesome TCK report as a workflow artifact"
     required: false
@@ -89,20 +120,36 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # Inputs are passed through `env:` rather than interpolated into the script
+    # body, so that a value containing shell metacharacters cannot break out.
+    - name: Prepare TCK Run
+      id: prep
+      shell: bash
+      env:
+        OPERATOR_KEY: ${{ inputs.operatorPrivateKey }}
+      run: |
+        echo "::add-mask::${OPERATOR_KEY}"
+
+        # Unique per action invocation, so concurrent jobs on a self-hosted
+        # runner cannot clobber each other's container.
+        SUFFIX="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RANDOM}"
+        echo "HIERO_RPC_CONTAINER=hiero-rpc-${SUFFIX}" >> "$GITHUB_ENV"
+        echo "HIERO_RPC_IMAGE=hiero-rpc-server:${SUFFIX}" >> "$GITHUB_ENV"
+
     - name: Checkout Hiero TCK Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: 'hiero-ledger/hiero-sdk-tck'
         ref: ${{ inputs.tckTag }}
         path: 'hiero-tck'
-    
+
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: 22
         cache: 'npm'
         cache-dependency-path: 'hiero-tck/package-lock.json'
-    
+
     - name: Install TCK Dependencies
       shell: bash
       working-directory: 'hiero-tck'
@@ -110,40 +157,65 @@ runs:
 
     - name: Build and Start TCK Server Container
       shell: bash
+      env:
+        START_SERVER: ${{ inputs.startServer }}
+        DOCKERFILE_PATH: ${{ inputs.dockerfilePath }}
+        SERVER_ENV: ${{ inputs.serverEnv }}
       run: |
-        DOCKERFILE_PATH="${{ inputs.dockerfilePath }}"
-        RPC_PORT="${{ inputs.rpcServerPort }}"
-
-        if [ -f "$DOCKERFILE_PATH" ]; then
-          echo "Found Dockerfile at $DOCKERFILE_PATH. Building server container..."
-          
-          # 1. Build image using caller repo root context
-          docker build -t hiero-rpc-server:local -f "$DOCKERFILE_PATH" .
-          
-          # 2. Start container in detached mode
-          docker run -d --network host --name hiero-rpc-container hiero-rpc-server:local
-          
-          sleep 5
-          echo "Waiting for RPC server on http://localhost:${RPC_PORT}..."
-          
-          echo "Waiting for RPC server on http://localhost:${RPC_PORT}..."
-
-          for i in {1..60}; do
-            if curl --silent --fail -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"reset","params":[],"id":1}' "http://localhost:${RPC_PORT}/" >/dev/null 2>&1; then
-              echo "RPC server is ready."
-              exit 0
-            fi
-
-            echo "RPC server not ready yet ($i/60)..."
-            sleep 2
-          done
-
-          echo "RPC server failed to become ready."
-          docker logs hiero-rpc-container
-          exit 1
-        else
-          echo "No Dockerfile found at $DOCKERFILE_PATH. Skipping container execution."
+        if [ "$START_SERVER" != "true" ]; then
+          echo "startServer is false - expecting the workflow to have started a server already."
+          exit 0
         fi
+
+        if [ ! -f "$DOCKERFILE_PATH" ]; then
+          echo "::error title=Dockerfile not found::No Dockerfile at '${DOCKERFILE_PATH}'. Set dockerfilePath to its location, or set startServer to false if the workflow starts the server itself."
+          exit 1
+        fi
+
+        # One `-e KEY=VALUE` per non-empty, non-comment line of serverEnv.
+        ENV_ARGS=()
+        while IFS= read -r line; do
+          line="${line#"${line%%[![:space:]]*}"}"
+          line="${line%"${line##*[![:space:]]}"}"
+          [ -z "$line" ] && continue
+          case "$line" in \#*) continue ;; esac
+          ENV_ARGS+=(-e "$line")
+          echo "Passing ${line%%=*} to the server container."
+        done <<< "$SERVER_ENV"
+
+        echo "Building server image from ${DOCKERFILE_PATH}..."
+        docker build -t "$HIERO_RPC_IMAGE" -f "$DOCKERFILE_PATH" .
+
+        docker run -d --network host --name "$HIERO_RPC_CONTAINER" "${ENV_ARGS[@]}" "$HIERO_RPC_IMAGE"
+
+    - name: Wait For RPC Server
+      shell: bash
+      env:
+        RPC_PORT: ${{ inputs.rpcServerPort }}
+        STARTUP_TIMEOUT: ${{ inputs.serverStartupTimeout }}
+      run: |
+        URL="http://localhost:${RPC_PORT}/"
+        DEADLINE=$(( SECONDS + STARTUP_TIMEOUT ))
+
+        echo "Waiting up to ${STARTUP_TIMEOUT}s for the RPC server on ${URL}..."
+
+        while [ "$SECONDS" -lt "$DEADLINE" ]; do
+          if curl --silent --fail -H "Content-Type: application/json" \
+               --data '{"jsonrpc":"2.0","method":"reset","params":[],"id":1}' \
+               "$URL" >/dev/null 2>&1; then
+            echo "RPC server is ready."
+            exit 0
+          fi
+          sleep 2
+        done
+
+        echo "::error title=RPC server not ready::No response from ${URL} after ${STARTUP_TIMEOUT}s."
+        if [ -n "${HIERO_RPC_CONTAINER:-}" ] && [ "$(docker ps -aq -f name="$HIERO_RPC_CONTAINER")" ]; then
+          echo "::group::${HIERO_RPC_CONTAINER} logs"
+          docker logs "$HIERO_RPC_CONTAINER" 2>&1 || true
+          echo "::endgroup::"
+        fi
+        exit 1
 
     - name: Run TCK Test Suite
       id: tck
@@ -154,23 +226,43 @@ runs:
         OPERATOR_ACCOUNT_PRIVATE_KEY: ${{ inputs.operatorPrivateKey }}
         NODE_IP: ${{ inputs.nodeIp }}
         NODE_ACCOUNT_ID: ${{ inputs.nodeAccountId }}
-        NODE_TIMEOUT: 30000
+        NODE_TIMEOUT: ${{ inputs.nodeTimeout }}
         MIRROR_NETWORK: ${{ inputs.mirrornodeGrpcUrl }}
         MIRROR_NODE_REST_URL: ${{ inputs.mirrornodeRestUrl }}
         MIRROR_NODE_REST_JAVA_URL: ${{ inputs.mirrornodeRestJavaUrl }}
         JSON_RPC_SERVER_URL: "http://localhost:${{ inputs.rpcServerPort }}/"
+        TEST_SPEC: ${{ inputs.testSpec }}
+        TEST_GREP: ${{ inputs.testGrep }}
+        TEST_SCRIPT: ${{ inputs.testScript }}
       # The suite is always allowed to run to completion. Its exit code is
       # recorded rather than propagated here so that the report is collected and
       # the container logs are dumped before the action fails the job.
       run: |
         ARGS=()
-        if [ -n "${{ inputs.testGrep }}" ]; then
-          ARGS+=(--grep "${{ inputs.testGrep }}")
-          echo "::notice title=Filtered TCK run::Only running tests matching /${{ inputs.testGrep }}/"
+
+        if [ -n "$TEST_SPEC" ]; then
+          # test:file carries no spec glob of its own, so only the given files run.
+          SCRIPT="test:file"
+          read -ra SPECS <<< "$TEST_SPEC"
+          ARGS+=("${SPECS[@]}")
+          echo "::notice title=Targeted TCK run::Running only: ${TEST_SPEC}"
+        else
+          SCRIPT="$TEST_SCRIPT"
         fi
 
+        if [ -n "$TEST_GREP" ]; then
+          ARGS+=(--grep "$TEST_GREP")
+          echo "::notice title=Filtered TCK run::Only tests matching /${TEST_GREP}/"
+        fi
+
+        echo "Running: npm run ${SCRIPT} -- ${ARGS[*]}"
+
         set +e
-        npm run "${{ inputs.testScript }}" -- "${ARGS[@]}"
+        if [ ${#ARGS[@]} -gt 0 ]; then
+          npm run "$SCRIPT" -- "${ARGS[@]}"
+        else
+          npm run "$SCRIPT"
+        fi
         code=$?
         set -e
 
@@ -269,7 +361,7 @@ runs:
 
     - name: Upload TCK Report
       if: always() && inputs.uploadReport == 'true' && steps.results.outputs.reportPath != ''
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ inputs.artifactName }}
         path: ${{ steps.results.outputs.reportPath }}
@@ -280,9 +372,9 @@ runs:
       if: always() && steps.tck.outputs.exitCode != '' && steps.tck.outputs.exitCode != '0'
       shell: bash
       run: |
-        if [ "$(docker ps -aq -f name=hiero-rpc-container)" ]; then
-          echo "::group::hiero-rpc-container logs"
-          docker logs hiero-rpc-container 2>&1 || true
+        if [ -n "${HIERO_RPC_CONTAINER:-}" ] && [ "$(docker ps -aq -f name="$HIERO_RPC_CONTAINER")" ]; then
+          echo "::group::${HIERO_RPC_CONTAINER} logs"
+          docker logs "$HIERO_RPC_CONTAINER" 2>&1 || true
           echo "::endgroup::"
         else
           echo "No RPC server container found - nothing to dump."
@@ -292,20 +384,21 @@ runs:
       if: always()
       shell: bash
       run: |
-        if [ "$(docker ps -aq -f name=hiero-rpc-container)" ]; then
-          echo "Stopping and removing RPC server container..."
-          docker rm -f hiero-rpc-container || true
+        if [ -n "${HIERO_RPC_CONTAINER:-}" ] && [ "$(docker ps -aq -f name="$HIERO_RPC_CONTAINER")" ]; then
+          echo "Stopping and removing ${HIERO_RPC_CONTAINER}..."
+          docker rm -f "$HIERO_RPC_CONTAINER" || true
         fi
 
     - name: Fail On TCK Test Failures
       if: always() && steps.tck.outputs.exitCode != '' && steps.tck.outputs.exitCode != '0'
       shell: bash
+      env:
+        FAILED: ${{ steps.results.outputs.failed }}
+        HOOKS: ${{ steps.results.outputs.hookFailures }}
+        SKIPPED: ${{ steps.results.outputs.skipped }}
+        TOTAL: ${{ steps.results.outputs.total }}
       run: |
-        FAILED="${{ steps.results.outputs.failed }}"
-        HOOKS="${{ steps.results.outputs.hookFailures }}"
-        SKIPPED="${{ steps.results.outputs.skipped }}"
-
-        echo "TCK suite failed: ${FAILED} test failure(s) and ${HOOKS} hook failure(s) out of ${{ steps.results.outputs.total }} tests."
+        echo "TCK suite failed: ${FAILED} test failure(s) and ${HOOKS} hook failure(s) out of ${TOTAL} tests."
         if [ "${SKIPPED:-0}" -gt 0 ] 2>/dev/null; then
           echo "${SKIPPED} further registered test(s) never ran."
         fi
