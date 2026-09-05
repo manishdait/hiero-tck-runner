@@ -1,6 +1,7 @@
-## Testing the Hiero Python SDK
+## Testing the TCK Runnner
 
-The TCK Runner is used by the Hiero Python SDK to validate its JSON-RPC endpoints.
+
+The TCK Runner is used by the Forkedd Hiero Python SDK to validate its JSON-RPC endpoints.
 
 A complete example of the TCK workflow can be found in the Forked Python SDK repository:
 [Hiero SDK Python TCK test workflow](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
@@ -80,7 +81,7 @@ EXPOSE 8544
 CMD ["uv", "run", "-m", "tck"]
 ```
 
-### Note
+### Note For Python Sdk
 Need to update the host for the tck server from `127.0.0.1` to `0.0.0.0`
 
 ```python
@@ -97,5 +98,13 @@ class ServerConfig:
 
 For a working implementation, see the **`test-tck-action` branch of `hiero-sdk-python` fork**:
 
-- [Hiero SDK Python test-tck-action branch](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
+- [Forked Hiero SDK Python test-tck-action branch](https://github.com/manishdait/hiero-sdk-python/tree/local/test-tck-action)
 - [TCK Runner Workflow Logs](https://github.com/manishdait/hiero-sdk-python/actions/runs/33972335265/job/101322936636)
+
+
+**Note**
+
+A working example of the TCK Runner with a fork of the Hiero Java SDK is available here:
+
+- [Forked Hiero SDK Java test-tck-action branch](https://github.com/manishdait/hiero-sdk-java/tree/poc/tck-action)
+- [TCK Runner Workflow Logs For Java Sdk](https://github.com/manishdait/hiero-sdk-java/actions/runs/33973314167/job/101325555201)

@@ -21,6 +21,8 @@ Add this step to your GitHub Actions workflow file (e.g., `.github/workflows/tck
     tckTag: 'v0.12.4'
 ```
 
+For a details and refrences, see the [Testing Guide](./docs/testing.md).
+
 ##  Inputs
 
 | Input | Description | Required | Default |
