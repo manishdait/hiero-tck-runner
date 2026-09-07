@@ -78,7 +78,7 @@ inputs:
       Which tests to run, as mocha arguments: spec files or globs relative to the TCK root,
       optionally with filters such as --grep. Quoted phrases are honoured. Runs only these,
       via the TCK's test:file script, and overrides testScript. Pairs with a job matrix for
-      sharding, e.g. testMatrix: ${{ matrix.spec }}. Empty runs the whole suite.
+      sharding: pass the matrix value straight in as testMatrix. Empty runs the whole suite.
       Examples: "src/tests/token-service/*.ts"
                 "src/tests/crypto-service/test-account-create-transaction.ts"
                 "src/tests/crypto-service/*.ts --grep 'Creates an account'"
