@@ -30,7 +30,7 @@ For a details and refrences, see the [Testing Guide](./docs/testing.md).
 
 | Input | Description | Default |
 | ----- | ----------- | ------- |
-| `startServer` | Build and run the server from `dockerfilePath`. Set `false` if your workflow starts it. | `true` |
+| `startServer` | Build and run the server from `dockerfilePath`. Set `false` if your workflow starts it (it must background and terminate it; the action then only waits for it to answer). | `true` |
 | `dockerfilePath` | Path to the Dockerfile, relative to repository root | `./Dockerfile` |
 | `rpcServerPort` | Port the JSON-RPC server listens on | `8544` |
 | `serverEnv` | Environment passed to the container, one `KEY=VALUE` per line | `""` |
@@ -56,9 +56,8 @@ Defaults match [`hiero-solo-action`](https://github.com/hiero-ledger/hiero-solo-
 | Input | Description | Default |
 | ----- | ----------- | ------- |
 | `tckTag` | Tag, branch or SHA of `hiero-sdk-tck` | `v0.12.4` |
-| `testSpec` | Space-separated spec files/globs. Runs **only** these. Overrides `testScript`. | `""` |
-| `testGrep` | Only tests whose full title matches this regex | `""` |
-| `testScript` | npm script when `testSpec` is empty. `auto` prefers the TCK's `test:ci` when the pinned tag has one, else `test:serial` | `auto` |
+| `testMatrix` | Mocha arguments naming what to run: specs, globs, `--grep`. Runs **only** these. Overrides `testScript`. | `""` |
+| `testScript` | npm script for a whole-suite run, used when `testMatrix` is empty. Falls back to `test` on tags without `test:ci`. | `test:ci` |
 
 ### Reporting
 
@@ -68,66 +67,68 @@ Defaults match [`hiero-solo-action`](https://github.com/hiero-ledger/hiero-solo-
 | `artifactName` | Artifact name. Vary per matrix leg. | `tck-report` |
 
 
-##  Running a targeted subset
+##  Choosing what to run
 
-The full suite takes roughly **33 minutes**, almost all of it waiting on the network:
-`beforeEach` hooks create accounts and mint tokens on chain. Failures are cheap; setup is not.
-So the way to make a PR fast is to run fewer tests, not to make tests faster.
-
-**While implementing one method**, point `testSpec` at its spec file. Only that file is
-loaded and compiled, which is much faster than filtering the whole suite with `testGrep`:
+**The whole suite** is the default: `testScript` runs the TCK's own `test:ci`, which executes
+every spec in parallel and gates the result on the mochawesome report rather than mocha's exit
+code, so a worker killed mid-run fails the job instead of silently passing. Expect **16-20
+minutes**. Nothing needs configuring:
 
 ```yml
 - uses: manishdait/hiero-tck-runner@main
   with:
-    testSpec: "src/tests/crypto-service/test-account-create-transaction.ts"
+    dockerfilePath: './tck/Dockerfile'
 ```
 
-Narrow further to a single test with `testGrep`:
+**While implementing a single method**, name its spec file with `testMatrix`. Only that file is
+loaded and compiled, so the run takes about a minute instead of twenty:
 
 ```yml
-    testSpec: "src/tests/crypto-service/test-account-create-transaction.ts"
-    testGrep: "Creates an account with"
+    testMatrix: "src/tests/crypto-service/test-account-create-transaction.ts"
 ```
 
-**For the full suite**, `testScript` defaults to `auto`: the TCK's own `test:ci` script when the
-pinned tag provides one, otherwise `test:serial`. `test:ci` gates on the mochawesome report rather
-than mocha's exit code, so a worker killed mid-run fails the job instead of silently passing.
+`testMatrix` takes mocha arguments, so globs and filters work too, and quoted phrases survive:
 
-> [!IMPORTANT]
-> Running the whole suite against **one** Solo network is the main source of spurious failures.
-> The consensus node becomes unhealthy under sustained load and the SDK client then fails every
-> later request with `All nodes are unhealthy`. Those show up as server errors, and the action
-> reports them separately from genuine test failures — a run whose failures are all
-> infrastructural is flagged as not a valid measurement.
->
-> Shard the suite across jobs, each with its own Solo network, rather than running all 61 spec
-> files against a single one:
+```yml
+    testMatrix: "src/tests/token-service/*.ts"
+    # or narrow to one test:
+    testMatrix: "src/tests/crypto-service/*.ts --grep 'Creates an account with'"
+```
+
+### Sharding the suite
+
+`testMatrix` is designed to pair with a job matrix. Giving each shard its own Solo network keeps
+any single network off the critical path, and each shard's report is uploaded separately:
 
 ```yml
 strategy:
+  fail-fast: false
   matrix:
     include:
       - shard: crypto
         spec: "src/tests/crypto-service/*.ts"
       - shard: token
         spec: "src/tests/token-service/*.ts"
-      # ...
+      - shard: topic
+        spec: "src/tests/topic-service/*.ts"
 steps:
   - uses: hiero-ledger/hiero-solo-action@v0.24.0   # one network per shard
     with: { installMirrorNode: true }
   - uses: manishdait/hiero-tck-runner@main
     with:
-      testSpec: ${{ matrix.spec }}
+      testMatrix: ${{ matrix.spec }}
       artifactName: tck-report-${{ matrix.shard }}
 ```
 
-Note that mocha's own `--parallel` (`testScript: test` or `test:ci`) shares a single network across
-7 workers, which makes the above worse, and mochawesome does not populate per-test detail under it —
-the counts are right but no failing test names are recorded.
+> [!NOTE]
+> `test:ci` and `test` run mocha with `--parallel`, and mochawesome does not populate per-test
+> detail under parallel mode: the counts are correct but no failing test names are recorded, and
+> the HTML report is empty. When you need to know *which* tests failed, re-run the affected specs
+> with `testMatrix`, or the whole suite with `testScript: test:serial`. The action says so in the
+> job summary rather than showing an empty list.
 
 > [!TIP]
-> A common pattern is `testSpec` on pull requests for fast feedback, and the full suite
+> A common pattern is `testMatrix` on pull requests for fast feedback, and the full suite
 > nightly on a schedule.
 
 
@@ -224,7 +225,7 @@ jobs:
           serverEnv: |
             TCK_PORT=8544
           # Fast, targeted run on PRs; whole suite on the nightly.
-          testSpec: ${{ github.event_name == 'pull_request' && 'src/tests/crypto-service/test-account-create-transaction.ts' || '' }}
+          testMatrix: ${{ github.event_name == 'pull_request' && 'src/tests/crypto-service/test-account-create-transaction.ts' || '' }}
           artifactName: tck-report-${{ github.event_name }}
 
       - name: Summarise

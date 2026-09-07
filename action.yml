@@ -9,7 +9,12 @@ branding:
 inputs:
   # --- Server under test ---------------------------------------------------
   startServer:
-    description: "Build and run the JSON-RPC server from dockerfilePath. Set to false if the workflow starts the server itself."
+    description: >
+      Build and run the JSON-RPC server from dockerfilePath. Set to false when the workflow
+      starts the server itself, in which case it must be backgrounded and torn down by the
+      workflow, and the action only waits for it to answer. Its main purpose is to make a
+      missing dockerfilePath an error instead of a silent skip: without it, a mistyped path
+      would run the whole suite against nothing.
     required: false
     default: "true"
   dockerfilePath:
@@ -68,18 +73,21 @@ inputs:
     description: "Tag or Commit SHA of hiero-sdk-tck"
     required: false
     default: "v0.12.4"
-  testSpec:
-    description: "Space-separated spec files or globs to run, relative to the TCK root, e.g. 'src/tests/crypto-service/test-account-create-transaction.ts'. Runs only those files, which is far faster than the whole suite. Overrides testScript."
-    required: false
-    default: ""
-  testGrep:
-    description: "Only run tests whose full title matches this regex (mocha --grep). Combine with testSpec to target a single method."
+  testMatrix:
+    description: >
+      Which tests to run, as mocha arguments: spec files or globs relative to the TCK root,
+      optionally with filters such as --grep. Quoted phrases are honoured. Runs only these,
+      via the TCK's test:file script, and overrides testScript. Pairs with a job matrix for
+      sharding, e.g. testMatrix: ${{ matrix.spec }}. Empty runs the whole suite.
+      Examples: "src/tests/token-service/*.ts"
+                "src/tests/crypto-service/test-account-create-transaction.ts"
+                "src/tests/crypto-service/*.ts --grep 'Creates an account'"
     required: false
     default: ""
   testScript:
-    description: "npm script used when testSpec is empty. Leave as 'auto' to prefer the TCK's own test:ci script when the pinned tag provides one and fall back to test:serial. Set explicitly to 'test:ci', 'test' (both parallel, --jobs 7) or 'test:serial' (one at a time)."
+    description: "npm script used for a whole-suite run, when testMatrix is empty. Defaults to the TCK's own test:ci, which runs the full suite in parallel and gates on the mochawesome report rather than mocha's exit code. Falls back to 'test' on tags that predate test:ci. Set explicitly to override, e.g. 'test:serial'."
     required: false
-    default: "auto"
+    default: "test:ci"
 
   # --- Reporting -----------------------------------------------------------
   uploadReport:
@@ -240,37 +248,32 @@ runs:
         MIRROR_NODE_REST_URL: ${{ inputs.mirrornodeRestUrl }}
         MIRROR_NODE_REST_JAVA_URL: ${{ inputs.mirrornodeRestJavaUrl }}
         JSON_RPC_SERVER_URL: "http://localhost:${{ inputs.rpcServerPort }}/"
-        TEST_SPEC: ${{ inputs.testSpec }}
-        TEST_GREP: ${{ inputs.testGrep }}
+        TEST_MATRIX: ${{ inputs.testMatrix }}
         TEST_SCRIPT: ${{ inputs.testScript }}
+        TCK_TAG: ${{ inputs.tckTag }}
       # The suite is always allowed to run to completion. Its exit code is
       # recorded rather than propagated here so that the report is collected and
       # the container logs are dumped before the action fails the job.
       run: |
         ARGS=()
 
-        if [ -n "$TEST_SPEC" ]; then
-          # test:file carries no spec glob of its own, so only the given files run.
+        if [ -n "$TEST_MATRIX" ]; then
+          # test:file carries no spec glob of its own, so only what is named here
+          # runs. Split via xargs rather than word-splitting, so a quoted
+          # --grep 'some phrase' survives as a single argument.
           SCRIPT="test:file"
-          read -ra SPECS <<< "$TEST_SPEC"
-          ARGS+=("${SPECS[@]}")
-          echo "::notice title=Targeted TCK run::Running only: ${TEST_SPEC}"
-        elif [ "$TEST_SCRIPT" = "auto" ]; then
-          # Newer TCK tags ship test:ci, which gates on the mochawesome report
-          # rather than mocha's exit code. Older tags do not, so fall back.
-          if node -e "process.exit(require('./package.json').scripts?.['test:ci'] ? 0 : 1)"; then
-            SCRIPT="test:ci"
-          else
-            SCRIPT="test:serial"
-          fi
-          echo "::notice title=TCK script::Resolved testScript 'auto' to '${SCRIPT}'"
+          while IFS= read -r arg; do
+            [ -n "$arg" ] && ARGS+=("$arg")
+          done < <(printf '%s' "$TEST_MATRIX" | xargs -n1 printf '%s\n')
+          echo "::notice title=Targeted TCK run::Running only: ${TEST_MATRIX}"
         else
           SCRIPT="$TEST_SCRIPT"
-        fi
-
-        if [ -n "$TEST_GREP" ]; then
-          ARGS+=(--grep "$TEST_GREP")
-          echo "::notice title=Filtered TCK run::Only tests matching /${TEST_GREP}/"
+          # test:ci postdates some tags; 'test' is the equivalent full-suite
+          # script on those, minus the heap profiling and the result gate.
+          if ! node -e "process.exit(require('./package.json').scripts?.['${SCRIPT}'] ? 0 : 1)"; then
+            echo "::warning title=TCK script missing::'${SCRIPT}' is not in this TCK tag (${TCK_TAG}); falling back to 'test'."
+            SCRIPT="test"
+          fi
         fi
 
         echo "Running: npm run ${SCRIPT} -- ${ARGS[*]}"
@@ -393,7 +396,7 @@ runs:
             echo "> [!CAUTION]"
             echo "> All ${INFRA} failures are server or network errors, not SDK incompatibilities."
             echo "> **This run is not a valid compatibility measurement.** The network or the server"
-            echo "> under test became unhealthy. Re-run over fewer tests per network - see testSpec."
+            echo "> under test became unhealthy. Re-run over fewer tests per network - see testMatrix."
           } >> "$GITHUB_STEP_SUMMARY"
         elif [ "$INFRA" -gt 0 ]; then
           {
@@ -452,7 +455,7 @@ runs:
             echo "> [!NOTE]"
             echo "> The report carries no per-test detail, so the ${ALL_FAILURES} failures cannot be"
             echo "> classified and the HTML report will be empty. mochawesome does not populate"
-            echo "> results under mocha's parallel mode - re-run with testScript: test:serial."
+            echo "> results under mocha's parallel mode - re-run with testScript: test:serial to see which tests failed."
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
